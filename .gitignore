@@ -1,0 +1,9 @@
+# compiled binaries (build from source)
+live_listen
+transcribe_macos
+
+# temp files
+*.mp3
+*.wav
+__pycache__/
+*.pyc
