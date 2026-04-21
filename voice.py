@@ -27,18 +27,48 @@ LISTENER_BIN = os.path.join(SCRIPT_DIR, "live_listen")
 PID_FILE = "/tmp/claude-voice.pid"
 
 
+WAKE_CHIME = "/tmp/claude-wake.wav"
+DONE_CHIME = "/tmp/claude-done.wav"
+
+
+def ensure_chimes():
+    """Generate chime files if they don't exist."""
+    import numpy as np
+    import wave as wav
+
+    if not os.path.exists(WAKE_CHIME):
+        rate = 44100
+        t = np.linspace(0, 0.25, int(rate * 0.25), False)
+        tone = 0.4 * np.sin(2 * np.pi * 880 * t) + 0.2 * np.sin(2 * np.pi * 1320 * t)
+        tone *= np.linspace(1, 0, len(tone)) ** 2
+        wf = wav.open(WAKE_CHIME, 'w')
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(rate)
+        wf.writeframes((tone * 32767).astype(np.int16).tobytes())
+        wf.close()
+
+    if not os.path.exists(DONE_CHIME):
+        rate = 44100
+        t = np.linspace(0, 0.15, int(rate * 0.15), False)
+        tone = 0.3 * np.sin(2 * np.pi * 440 * t)
+        tone *= np.linspace(1, 0, len(tone)) ** 2
+        wf = wav.open(DONE_CHIME, 'w')
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(rate)
+        wf.writeframes((tone * 32767).astype(np.int16).tobytes())
+        wf.close()
+
+
 def play_chime():
-    """Play a chime via afplay or say."""
+    """Play wake chime through headphones."""
     subprocess.Popen(
-        ["osascript", "-e", 'beep 1'],
+        ["afplay", WAKE_CHIME],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 
 
 def play_done():
-    """Play a lower tone."""
+    """Play done chime through headphones."""
     subprocess.Popen(
-        ["osascript", "-e", 'beep 1'],
+        ["afplay", DONE_CHIME],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 
@@ -54,6 +84,34 @@ def send_to_claude_code(text):
     end tell
     '''
     subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+def speak_response(text):
+    """Speak text aloud using Edge-TTS (Ava voice)."""
+    import re
+    # Strip markdown
+    msg = re.sub(r'```[\s\S]*?```', '', text)
+    msg = re.sub(r'`[^`]+`', '', msg)
+    msg = re.sub(r'\*\*(.+?)\*\*', r'\1', msg)
+    msg = re.sub(r'\*(.+?)\*', r'\1', msg)
+    msg = re.sub(r'^#{1,6}\s+', '', msg, flags=re.MULTILINE)
+    msg = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', msg)
+    msg = re.sub(r'^[-*]\s+', '', msg, flags=re.MULTILINE)
+    msg = re.sub(r'\n{2,}', '. ', msg)
+    msg = re.sub(r'\n', ' ', msg)
+    msg = msg.strip()
+    if not msg:
+        return
+    if len(msg) > 2000:
+        msg = msg[:2000] + '. Check the screen for the rest.'
+    # Kill any previous TTS
+    subprocess.run(["pkill", "-f", "afplay /tmp/claude_tts"], capture_output=True)
+    tmpfile = f"/tmp/claude_tts_{os.getpid()}.mp3"
+    subprocess.run(
+        ["edge-tts", "--voice", "en-US-AvaNeural", "--text", msg, "--write-media", tmpfile],
+        capture_output=True
+    )
+    subprocess.Popen(["afplay", tmpfile], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def main():
@@ -104,6 +162,8 @@ def main():
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
 
+    ensure_chimes()
+
     # Check live_listen binary exists
     if not os.path.exists(LISTENER_BIN):
         print(f"  ERROR: {LISTENER_BIN} not found")
@@ -134,7 +194,12 @@ def main():
                 continue
 
             if line == "__WAKE__":
-                print("  ✨ wake word detected!")
+                print("  ✨ wake word — conversation started!")
+                play_chime()
+                continue
+
+            if line == "__LISTENING__":
+                print("  🎙️  listening... (just talk, no wake word needed)")
                 play_chime()
                 continue
 
